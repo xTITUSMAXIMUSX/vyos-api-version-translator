@@ -9,7 +9,7 @@ dist/
 build/
 eggs/
 .eggs/
-lib64/
+lib64
 parts/
 sdist/
 var/
@@ -27,7 +27,6 @@ venv.bak/
 bin/
 include/
 lib/
-lib64/
 pyvenv.cfg
 pip-selfcheck.json
 

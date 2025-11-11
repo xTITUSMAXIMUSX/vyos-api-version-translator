@@ -1,28 +1,17 @@
 """
-VyOS Batch Builders - Modular structure
+VyOS Batch Builders
 
-Each feature (DHCP, interfaces, firewall, etc.) has its own builder mixin.
-These are combined to create a comprehensive batch builder.
+Self-contained batch builders for different interface types.
+Each builder includes all necessary operations for its interface type.
 """
 
-from .base import BaseBatchBuilder
-from .interface import InterfaceBuilderMixin
+from .interfaces import EthernetInterfaceBuilderMixin, DummyInterfaceBuilderMixin
 
-
-class VersionAwareBatchBuilder(
-    InterfaceBuilderMixin,
-    BaseBatchBuilder
-):
-    """
-    Complete batch builder with all features.
-
-    To add new features, just add a new mixin class here.
-    """
-    pass
-
+# Directly use the self-contained builders
+EthernetBatchBuilder = EthernetInterfaceBuilderMixin
+DummyBatchBuilder = DummyInterfaceBuilderMixin
 
 __all__ = [
-    "BaseBatchBuilder",
-    "InterfaceBuilderMixin",
-    "VersionAwareBatchBuilder",
+    "EthernetBatchBuilder",
+    "DummyBatchBuilder",
 ]

@@ -27,6 +27,7 @@ venv.bak/
 bin/
 include/
 lib/
+lib64/
 pyvenv.cfg
 pip-selfcheck.json
 

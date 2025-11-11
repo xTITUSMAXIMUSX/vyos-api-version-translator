@@ -4,13 +4,14 @@ A FastAPI backend that translates simple JSON requests into correct VyOS command
 
 ## What This Does
 
-Your frontend sends simple requests like "set interface description" → This API translates it to the correct VyOS command based on version (1.4 vs 1.5) → Sends to VyOS in one efficient batch.
+Your frontend sends simple requests like "configure interface" → This API translates it to the correct VyOS command based on version (1.4 vs 1.5) → Sends to VyOS in one efficient batch.
 
 **Key Benefits:**
 - ✅ Frontend doesn't need to know VyOS command syntax
 - ✅ Handles version differences automatically (VyOS 1.4 vs 1.5)
 - ✅ Batches multiple changes into ONE API call (faster!)
-- ✅ Clean, modular code - each feature in its own file
+- ✅ Caches configuration for fast reads
+- ✅ Clean, self-contained code - each interface type in its own complete file
 
 ---
 
@@ -36,18 +37,34 @@ curl -X POST "http://127.0.0.1:8000/devices/register" \
   }'
 ```
 
-### 3. Configure an Interface
+### 3. Pull Configuration (Cache It)
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/vyos/router1/interface/description/set" \
+curl -X POST "http://127.0.0.1:8000/vyos/router1/config/refresh"
+```
+
+### 4. Configure Interfaces (Batch)
+
+```bash
+curl -X POST "http://127.0.0.1:8000/vyos/router1/ethernet/batch" \
   -H "Content-Type: application/json" \
   -d '{
     "interface": "eth0",
-    "description": "WAN Interface"
+    "operations": [
+      {"op": "set_description", "value": "WAN Interface"},
+      {"op": "set_address", "value": "10.0.0.1/24"},
+      {"op": "set_mtu", "value": "1500"}
+    ]
   }'
 ```
 
-### 4. View Interactive Docs
+### 5. Read Interface Configuration
+
+```bash
+curl "http://127.0.0.1:8000/vyos/router1/ethernet/config"
+```
+
+### 6. View Interactive Docs
 
 Visit `http://127.0.0.1:8000/docs` to see all endpoints and try them in your browser!
 
@@ -57,28 +74,29 @@ Visit `http://127.0.0.1:8000/docs` to see all endpoints and try them in your bro
 
 ```
 ┌─────────────┐
-│  Frontend   │  Sends: {"interface": "eth0", "description": "WAN"}
+│  Frontend   │  Sends: {"interface": "eth0", "operations": [...]}
 └──────┬──────┘
        │
        ▼
 ┌─────────────────────────────────────────────────────────┐
-│  FastAPI Router (routers/interface.py)                  │
+│  FastAPI Router (routers/interfaces/ethernet.py)        │
 │  - Receives request                                     │
-│  - Validates JSON                                       │
+│  - Validates JSON with Pydantic models                  │
 │  - Calls builder                                        │
 └──────┬──────────────────────────────────────────────────┘
        │
        ▼
 ┌─────────────────────────────────────────────────────────┐
-│  Builder (vyos_builders/interface.py)                   │
-│  - Takes simple parameters                              │
-│  - Calls mapper to get correct command                  │
-│  - Adds to batch                                        │
+│  Builder (vyos_builders/interfaces/ethernet.py)         │
+│  - Self-contained batch builder                         │
+│  - Takes operations and builds batch                    │
+│  - Calls mapper to get correct VyOS commands            │
 └──────┬──────────────────────────────────────────────────┘
        │
        ▼
 ┌─────────────────────────────────────────────────────────┐
-│  Mapper (vyos_mappers/interface.py)                     │
+│  Mapper (vyos_mappers/interfaces/ethernet.py)           │
+│  - Self-contained command mapper                        │
 │  - Knows VyOS version (1.4 or 1.5)                      │
 │  - Returns correct command path                         │
 │  - Example: ["interfaces", "ethernet", "eth0", ...]     │
@@ -91,183 +109,420 @@ Visit `http://127.0.0.1:8000/docs` to see all endpoints and try them in your bro
 └─────────────────────────────────────────────────────────┘
 ```
 
+**For READ operations:**
+```
+┌─────────────┐
+│  Frontend   │  GET request
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────────────────────────────────────────────┐
+│  FastAPI Router (routers/interfaces/ethernet.py)        │
+│  - Retrieves cached config from service                 │
+│  - Calls mapper to parse VyOS data                      │
+│  - Returns structured JSON                              │
+└─────────────────────────────────────────────────────────┘
+```
+
 **In short:**
-1. **Router** = API endpoint (receives JSON)
-2. **Builder** = Builds batch of commands
-3. **Mapper** = Translates to correct VyOS syntax based on version
+1. **Router** = API endpoint (receives/returns JSON) - self-contained per interface type
+2. **Builder** = Builds batch of commands - self-contained per interface type
+3. **Mapper** = Translates to/from VyOS syntax based on version - self-contained per interface type
 
 ---
 
-## Project Structure
+## Project Structure Example
 
 ```
 test/
-├── app.py                      # Main FastAPI app (device management)
-├── vyos_service.py             # VyOS connection service
+├── app.py                              # Main FastAPI app (device management)
+├── vyos_service.py                     # VyOS connection & config caching
 │
-├── routers/                    # API endpoints (one file per feature)
-│   ├── interface.py           # Interface endpoints
-│   └── (add more features here)
+├── routers/                            # API endpoints
+│   └── interfaces/                     # Interface endpoints by type
+│       ├── ethernet.py                 # COMPLETE ethernet endpoints (GET /config, POST /batch)
+│       ├── dummy.py                    # COMPLETE dummy endpoints (GET /config, POST /batch)
+│       └── __init__.py
 │
-├── vyos_builders/              # Build batches (one file per feature)
-│   ├── base.py                # Base builder class
-│   ├── interface.py           # Interface batch operations
-│   └── (add more features here)
+├── vyos_builders/                      # Batch builders
+│   ├── __init__.py                     # Exports: EthernetBatchBuilder, DummyBatchBuilder
+│   └── interfaces/                     # Interface builders by type
+│       ├── ethernet.py                 # COMPLETE ethernet batch builder
+│       ├── dummy.py                    # COMPLETE dummy batch builder
+│       └── __init__.py
 │
-└── vyos_mappers/               # Version translation (one file per feature)
-    ├── base.py                # Base mapper class
-    ├── interface.py           # Interface command mapping
-    └── (add more features here)
+└── vyos_mappers/                       # VyOS command translation & parsing
+    ├── __init__.py                     # CommandMapperRegistry
+    ├── base.py                         # BaseFeatureMapper (version storage)
+    └── interfaces/                     # Interface mappers by type
+        ├── ethernet.py                 # COMPLETE ethernet mapper (commands + parsing)
+        ├── dummy.py                    # COMPLETE dummy mapper (commands + parsing)
+        └── __init__.py
 ```
+
+### Key Architecture Principles Examples
+
+**✅ Self-Contained Files:**
+- Each interface type (ethernet, dummy) has its own COMPLETE file in each layer
+- All models, operations, and logic for that type are in ONE file
+- No shared base files in the interfaces directories
+
+**✅ Separation by Interface Type:**
+- Even though ethernet and dummy share common operations (description, address, MTU, etc.), they are in SEPARATE files
+- This makes it easy to see what each interface type supports
+- Easy to add interface-specific features (e.g., duplex/speed for ethernet only)
+
+**✅ No Inheritance Complexity:**
+- Builders and mappers inherit only from the base feature classes
+- No mixin patterns or shared interface base classes
+- Everything for one interface type is explicit and visible
 
 ---
 
-## How to Add a New Feature
+## How to Add a New Interface Type
 
-Let's say you want to add **Static Routes** support. Here's the process:
+Let's say you want to add **Bridge** interface support. Here's the process:
+
+### Important Rule: Keep It Separate!
+
+**Even if bridges share common operations with ethernet (like description, address, MTU), create SEPARATE self-contained files.** This makes the code easier to understand and maintain.
+
+---
 
 ### Step 1: Create the Mapper
 
-**File:** `vyos_mappers/static_routes.py`
+**File:** `vyos_mappers/interfaces/bridge.py`
 
-This defines the VyOS commands for different versions:
+This defines ALL bridge commands and parsing logic in ONE file:
 
 ```python
-from typing import List
-from .base import BaseFeatureMapper
+"""
+Bridge Interface Command Mapper
 
-class StaticRoutesMapper(BaseFeatureMapper):
-    """Maps static route commands for VyOS 1.4 and 1.5"""
+Handles bridge-specific interface commands.
+Provides both command path generation (for writes) and config parsing (for reads).
+"""
 
-    def get_route(self, destination: str, next_hop: str) -> List[str]:
-        """Get command path for a static route."""
-        # Same for both 1.4 and 1.5
-        return ["protocols", "static", "route", destination, "next-hop", next_hop]
+from typing import List, Dict, Any
+from ..base import BaseFeatureMapper
+
+
+class BridgeInterfaceMapper(BaseFeatureMapper):
+    """Bridge interface mapper with all bridge interface operations"""
+
+    def __init__(self, version: str):
+        """Initialize with VyOS version."""
+        super().__init__(version)
+        self.interface_type = "bridge"
+
+    # ========================================================================
+    # Command Path Methods (for WRITE operations)
+    # ========================================================================
+
+    def get_description(self, interface: str, description: str) -> List[str]:
+        """Get command path for setting interface description."""
+        return ["interfaces", self.interface_type, interface, "description", description]
+
+    def get_description_path(self, interface: str) -> List[str]:
+        """Get command path for description property (for deletion)."""
+        return ["interfaces", self.interface_type, interface, "description"]
+
+    def get_address(self, interface: str, address: str) -> List[str]:
+        """Get command path for setting interface address."""
+        return ["interfaces", self.interface_type, interface, "address", address]
+
+    def get_member(self, interface: str, member: str) -> List[str]:
+        """Get command path for adding bridge member (bridge-specific)."""
+        return ["interfaces", self.interface_type, interface, "member", "interface", member]
+
+    # Add all other bridge operations...
+
+    # ========================================================================
+    # Config Parsing Methods (for READ operations)
+    # ========================================================================
+
+    def parse_single_interface(self, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse a single bridge interface configuration from VyOS."""
+        if self.version == "1.4":
+            return self._parse_interface_v14(name, config)
+        elif self.version == "1.5":
+            return self._parse_interface_v15(name, config)
+        else:
+            return self._parse_interface_v15(name, config)
+
+    def _parse_interface_v14(self, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse bridge interface configuration for VyOS 1.4.x."""
+        addresses = []
+        if "address" in config:
+            addr = config["address"]
+            if isinstance(addr, list):
+                addresses = addr
+            elif isinstance(addr, str):
+                addresses = [addr]
+
+        # Parse bridge members
+        members = []
+        if "member" in config and "interface" in config["member"]:
+            member_config = config["member"]["interface"]
+            if isinstance(member_config, dict):
+                members = list(member_config.keys())
+
+        return {
+            "name": name,
+            "type": self.interface_type,
+            "addresses": addresses,
+            "description": config.get("description"),
+            "members": members,
+            "disable": "disable" in config if "disable" in config else None,
+        }
+
+    def _parse_interface_v15(self, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse bridge interface configuration for VyOS 1.5.x."""
+        # Same as 1.4 for now, but can differ in future
+        return self._parse_interface_v14(name, config)
+
+    def parse_interfaces_of_type(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse all bridge interfaces."""
+        interfaces = []
+        for iface_name, iface_config in config.items():
+            if not isinstance(iface_config, dict):
+                continue
+            interface = self.parse_single_interface(iface_name, iface_config)
+            interfaces.append(interface)
+
+        return {
+            "interfaces": interfaces,
+            "total": len(interfaces),
+            "by_type": {self.interface_type: len(interfaces)},
+            "by_vrf": {},
+        }
 ```
 
 ---
 
 ### Step 2: Create the Builder
 
-**File:** `vyos_builders/static_routes.py`
+**File:** `vyos_builders/interfaces/bridge.py`
 
-This provides high-level methods to add routes to a batch:
+This provides ALL batch operations for bridges in ONE file:
 
 ```python
-class StaticRoutesBuilderMixin:
-    """Mixin for static route batch operations"""
+"""
+Bridge Interface Batch Builder
 
-    def set_static_route(self, destination: str, next_hop: str):
-        """Add a static route"""
-        path = self.mappers["static_routes"].get_route(destination, next_hop)
+Provides all bridge interface batch operations.
+"""
+
+from typing import List, Dict, Any
+from vyos_mappers import CommandMapperRegistry
+
+
+class BridgeInterfaceBuilderMixin:
+    """Complete batch builder for bridge interface operations"""
+
+    def __init__(self, version: str):
+        """Initialize bridge interface batch builder."""
+        self.version = version
+        self._operations: List[Dict[str, Any]] = []
+        self.mappers = CommandMapperRegistry.get_all_mappers(version)
+        self.interface_mapper_key = "interface_bridge"
+
+    # ========================================================================
+    # Core Batch Operations
+    # ========================================================================
+
+    def add_set(self, path: List[str]) -> "BridgeInterfaceBuilderMixin":
+        """Add a 'set' operation to the batch."""
+        self._operations.append({"op": "set", "path": path})
+        return self
+
+    def add_delete(self, path: List[str]) -> "BridgeInterfaceBuilderMixin":
+        """Add a 'delete' operation to the batch."""
+        self._operations.append({"op": "delete", "path": path})
+        return self
+
+    def get_operations(self) -> List[Dict[str, Any]]:
+        """Get the list of operations."""
+        return self._operations.copy()
+
+    def is_empty(self) -> bool:
+        """Check if the batch is empty."""
+        return len(self._operations) == 0
+
+    # ========================================================================
+    # Bridge Interface Operations
+    # ========================================================================
+
+    def set_interface_description(
+        self, interface: str, description: str
+    ) -> "BridgeInterfaceBuilderMixin":
+        """Set interface description"""
+        path = self.mappers[self.interface_mapper_key].get_description(interface, description)
         return self.add_set(path)
 
-    def delete_static_route(self, destination: str, next_hop: str):
-        """Delete a static route"""
-        path = self.mappers["static_routes"].get_route(destination, next_hop)
-        return self.add_delete(path)
+    def add_bridge_member(
+        self, interface: str, member: str
+    ) -> "BridgeInterfaceBuilderMixin":
+        """Add interface to bridge (bridge-specific)"""
+        path = self.mappers[self.interface_mapper_key].get_member(interface, member)
+        return self.add_set(path)
+
+    # Add all other bridge operations...
 ```
 
 ---
 
-### Step 3: Register the Mapper
+### Step 3: Create the Router
 
-**File:** `vyos_mappers/__init__.py`
+**File:** `routers/interfaces/bridge.py`
 
-Add these two lines:
-
-```python
-from .static_routes import StaticRoutesMapper  # ← Add import
-
-CommandMapperRegistry.register_feature("static_routes", StaticRoutesMapper)  # ← Add registration
-```
-
----
-
-### Step 4: Register the Builder
-
-**File:** `vyos_builders/__init__.py`
-
-Add to the imports and class:
+This creates ALL endpoints for bridges in ONE file:
 
 ```python
-from .static_routes import StaticRoutesBuilderMixin  # ← Add import
+"""
+Bridge Interface Configuration Endpoints
 
-class VersionAwareBatchBuilder(
-    InterfaceBuilderMixin,
-    StaticRoutesBuilderMixin,  # ← Add here
-    BaseBatchBuilder
-):
-    """Complete batch builder with all features."""
-    pass
-```
+All bridge interface endpoints for VyOS configuration.
+"""
 
----
-
-### Step 5: Create the Router (API Endpoints)
-
-**File:** `routers/static_routes.py`
-
-This creates the FastAPI endpoints:
-
-```python
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from vyos_service import VyOSDeviceRegistry
 
-router = APIRouter(prefix="/vyos/{device_name}/routes", tags=["vyos-routes"])
+router = APIRouter(prefix="/vyos/{device_name}/bridge", tags=["bridge-interface"])
 
 device_registry: VyOSDeviceRegistry = None
 
+
 def set_device_registry(registry: VyOSDeviceRegistry):
+    """Set the device registry for this router."""
     global device_registry
     device_registry = registry
 
-# Pydantic Models
-class StaticRoute(BaseModel):
-    destination: str = Field(..., description="Destination network (e.g., 10.0.0.0/24)")
-    next_hop: str = Field(..., description="Next hop IP address")
+
+# ============================================================================
+# Request Models (for WRITE operations)
+# ============================================================================
+
+class InterfaceDescription(BaseModel):
+    """Model for setting interface description."""
+    interface: str = Field(..., description="Interface name (e.g., br0)")
+    description: str = Field(..., description="Interface description")
+
+
+class BridgeMember(BaseModel):
+    """Model for bridge member operations."""
+    interface: str = Field(..., description="Bridge name (e.g., br0)")
+    member: str = Field(..., description="Member interface (e.g., eth0)")
+
+
+class InterfaceBatchRequest(BaseModel):
+    """Model for batch interface configuration."""
+    interface: str = Field(..., description="Interface name (e.g., br0)")
+    operations: List[Dict[str, str]] = Field(
+        ...,
+        description="List of interface operations"
+    )
+
 
 class VyOSResponse(BaseModel):
+    """Standard response from VyOS operations."""
     success: bool
     data: Optional[Dict] = None
     error: Optional[str] = None
 
-# Endpoints
-@router.post("/set")
-async def set_static_route(
-    device_name: str, config: StaticRoute
-) -> VyOSResponse:
-    """Add a static route."""
+
+# ============================================================================
+# Response Models (for READ operations)
+# ============================================================================
+
+class BridgeInterfaceConfigResponse(BaseModel):
+    """Bridge interface configuration from VyOS (read operation)"""
+    name: str = Field(..., description="Interface name (e.g., br0)")
+    type: str = Field(..., description="Interface type (bridge)")
+    addresses: List[str] = Field(default_factory=list)
+    description: Optional[str] = None
+    members: List[str] = Field(default_factory=list, description="Bridge member interfaces")
+    disable: Optional[bool] = None
+
+
+class BridgeInterfacesConfigResponse(BaseModel):
+    """Response containing all bridge interface configurations"""
+    interfaces: List[BridgeInterfaceConfigResponse] = Field(default_factory=list)
+    total: int = Field(0)
+    by_type: Dict[str, int] = Field(default_factory=dict)
+    by_vrf: Dict[str, int] = Field(default_factory=dict)
+
+
+# ============================================================================
+# READ Operations (GET)
+# ============================================================================
+
+@router.get("/config", response_model=BridgeInterfacesConfigResponse)
+async def get_bridge_config(device_name: str) -> BridgeInterfacesConfigResponse:
+    """Get all bridge interface configurations from VyOS."""
+    from vyos_mappers.interfaces import BridgeInterfaceMapper
+
     try:
         service = device_registry.get(device_name)
-        batch = service.create_version_aware_batch()
-        batch.set_static_route(config.destination, config.next_hop)
-        response = service.execute_batch(batch)
+        full_config = service.get_full_config()
+        raw_config = full_config.get("interfaces", {}).get("bridge", {})
 
-        return VyOSResponse(
-            success=response.status == 200,
-            data=response.result,
-            error=response.error if response.error else None
-        )
+        mapper = BridgeInterfaceMapper(service.get_version())
+        parsed_data = mapper.parse_interfaces_of_type(raw_config)
+
+        return BridgeInterfacesConfigResponse(**parsed_data)
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/delete")
-async def delete_static_route(
-    device_name: str, config: StaticRoute
+
+# ============================================================================
+# Bridge Interface Batch Endpoint
+# ============================================================================
+
+@router.post("/batch")
+async def configure_interface_batch(
+    device_name: str, request: InterfaceBatchRequest
 ) -> VyOSResponse:
-    """Delete a static route."""
+    """
+    Configure bridge interface using batch operations.
+
+    Supported operations:
+    - set_description
+    - delete_description
+    - set_address
+    - delete_address
+    - add_member
+    - delete_member
+    - delete_interface
+    """
     try:
         service = device_registry.get(device_name)
-        batch = service.create_version_aware_batch()
-        batch.delete_static_route(config.destination, config.next_hop)
-        response = service.execute_batch(batch)
+        batch = service.create_bridge_batch()
 
+        for operation in request.operations:
+            op_type = operation.get("op")
+            value = operation.get("value")
+
+            if not op_type:
+                raise HTTPException(status_code=400, detail="Operation must have 'op' key")
+
+            # Handle each operation type...
+            if op_type == "set_description":
+                if not value:
+                    raise HTTPException(status_code=400, detail=f"{op_type} requires a value")
+                batch.set_interface_description(request.interface, value)
+            elif op_type == "add_member":
+                if not value:
+                    raise HTTPException(status_code=400, detail=f"{op_type} requires a value")
+                batch.add_bridge_member(request.interface, value)
+            # ... handle all other operations
+
+        response = service.execute_batch(batch)
         return VyOSResponse(
             success=response.status == 200,
             data=response.result,
@@ -281,75 +536,176 @@ async def delete_static_route(
 
 ---
 
-### Step 6: Register the Router
+### Step 4: Register the Mapper
+
+**File:** `vyos_mappers/__init__.py`
+
+```python
+from .interfaces.bridge import BridgeInterfaceMapper
+
+CommandMapperRegistry.register_feature("interface_bridge", BridgeInterfaceMapper)
+```
+
+---
+
+### Step 5: Register the Builder
+
+**File:** `vyos_builders/__init__.py`
+
+```python
+from .interfaces import BridgeInterfaceBuilderMixin
+
+BridgeBatchBuilder = BridgeInterfaceBuilderMixin
+
+__all__ = [
+    "EthernetBatchBuilder",
+    "DummyBatchBuilder",
+    "BridgeBatchBuilder",  # ← Add this
+]
+```
+
+---
+
+### Step 6: Add Service Method
+
+**File:** `vyos_service.py`
+
+```python
+def create_bridge_batch(self) -> BridgeBatchBuilder:
+    """Create a batch builder for bridge interfaces."""
+    return BridgeBatchBuilder(self.config.version)
+```
+
+---
+
+### Step 7: Register the Router
 
 **File:** `app.py`
 
-Add these lines:
-
 ```python
-from routers import interface, static_routes  # ← Add import
+from routers.interfaces import ethernet, dummy, bridge
 
-# Set device registry for routers
-interface.set_device_registry(device_registry)
-static_routes.set_device_registry(device_registry)  # ← Add this
-
-# Include routers
-app.include_router(interface.router)
-app.include_router(static_routes.router)  # ← Add this
-```
-
----
-
-### Done! Now You Can Use It:
-
-```bash
-curl -X POST "http://127.0.0.1:8000/vyos/router1/routes/set" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "destination": "10.0.0.0/24",
-    "next_hop": "192.168.1.1"
-  }'
+bridge.set_device_registry(device_registry)
+app.include_router(bridge.router)
 ```
 
 ---
 
 ## Quick Reference Checklist
 
-When adding a new feature, create these files:
+When adding a new interface type (e.g., bridge, pppoe, vxlan), create these **self-contained** files:
 
 ```
-☐ vyos_mappers/FEATURE.py       - Command translation logic
-☐ vyos_builders/FEATURE.py      - Batch operation methods
-☐ routers/FEATURE.py            - API endpoints
+☐ vyos_mappers/interfaces/INTERFACE_TYPE.py
+   - Inherits from BaseFeatureMapper
+   - Contains ALL command path methods (get_X, get_X_path)
+   - Contains ALL parsing methods (_parse_interface_v14, _parse_interface_v15)
+   - Typically 150-200 lines
+
+☐ vyos_builders/interfaces/INTERFACE_TYPE.py
+   - Self-contained builder class
+   - Contains core batch operations (add_set, add_delete, etc.)
+   - Contains ALL interface operation methods
+   - Typically 120-150 lines
+
+☐ routers/interfaces/INTERFACE_TYPE.py
+   - Self-contained router with all endpoints
+   - Contains ALL Pydantic models (request + response)
+   - Contains GET /config endpoint
+   - Contains POST /batch endpoint
+   - Typically 300-350 lines
 
 Then register in:
-☐ vyos_mappers/__init__.py      - Add import and register_feature()
-☐ vyos_builders/__init__.py     - Add to VersionAwareBatchBuilder
-☐ app.py                        - Import router and include it
+☐ vyos_mappers/__init__.py          - Add import and register_feature()
+☐ vyos_builders/__init__.py         - Export the builder
+☐ vyos_service.py                   - Add create_X_batch() method
+☐ app.py                             - Import router and include it
 ```
 
 ---
 
-## Current Features
+## Architecture Patterns
 
-### Interface Management
-- Set/delete description
-- Set/delete IP addresses
-- Set MTU, duplex, speed
-- Delete entire interface
-- Batch operations
+### Configuration Caching (for READ operations)
 
-### Coming Soon
-Add your own features following the guide above!
+```python
+# In vyos_service.py
+def get_full_config(self, refresh: bool = False) -> Dict[str, Any]:
+    """Get full VyOS config (cached unless refresh=True)"""
+    if self._cached_config is not None and not refresh:
+        return self._cached_config
+
+    response = self.device.show(path=["configuration", "json", "pretty"])
+    self._cached_config = json.loads(response.result)
+    return self._cached_config
+```
+
+### Version-Aware Parsing
+
+```python
+# In each mapper file
+def parse_single_interface(self, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    """Version-aware parsing dispatcher"""
+    if self.version == "1.4":
+        return self._parse_interface_v14(name, config)
+    elif self.version == "1.5":
+        return self._parse_interface_v15(name, config)
+    else:
+        return self._parse_interface_v15(name, config)
+```
+
+### Batch Operations
+
+```python
+# Single operation
+{
+    "interface": "eth0",
+    "operations": [
+        {"op": "set_description", "value": "WAN"}
+    ]
+}
+
+# Multiple operations in one batch
+{
+    "interface": "eth0",
+    "operations": [
+        {"op": "set_description", "value": "WAN"},
+        {"op": "set_address", "value": "10.0.0.1/24"},
+        {"op": "set_mtu", "value": "9000"},
+        {"op": "enable"}
+    ]
+}
+```
+
+---
+
+## API Endpoints Example
+
+Visit `http://127.0.0.1:8000/docs` for full interactive documentation.
+
+### Device Management
+- `POST /devices/register` - Register a VyOS device
+- `GET /devices` - List all devices
+- `DELETE /devices/{name}` - Unregister a device
+
+### Configuration Management
+- `POST /vyos/{device}/config/refresh` - Pull and cache full config
+- `GET /vyos/{device}/config` - Get cached config
+
+### Ethernet Interfaces
+- `GET /vyos/{device}/ethernet/config` - Read all ethernet interfaces
+- `POST /vyos/{device}/ethernet/batch` - Configure ethernet interface (batch)
+
+### Dummy Interfaces
+- `GET /vyos/{device}/dummy/config` - Read all dummy interfaces
+- `POST /vyos/{device}/dummy/batch` - Configure dummy interface (batch)
 
 ---
 
 ## Tips
 
 **Version Differences:**
-- Some VyOS commands are different between 1.4 and 1.5
-- Handle this in the **mapper** using `if self.version == "1.4":`
+- Handle version differences in the **mapper** (`_parse_interface_v14` vs `_parse_interface_v15`)
 - The **builder** and **router** don't need to know about versions!
 
 **Testing:**
@@ -357,34 +713,11 @@ Add your own features following the guide above!
 - Each endpoint validates input automatically (Pydantic)
 - All errors return helpful messages
 
-**Architecture:**
-- Keep files small (~50-300 lines each)
-- One feature = 3 files (mapper, builder, router)
-- Each feature is independent
-
----
-
-## API Endpoints
-
-Visit `http://127.0.0.1:8000/docs` for full interactive documentation.
-
-**Device Management:**
-- `POST /devices/register` - Register a VyOS device
-- `GET /devices` - List all devices
-- `DELETE /devices/{name}` - Unregister a device
-
-**Interface Management:**
-- `POST /vyos/{device}/interface/description/set`
-- `POST /vyos/{device}/interface/address/set`
-- `POST /vyos/{device}/interface/address/delete`
-- `POST /vyos/{device}/interface/mtu/set`
-- `POST /vyos/{device}/interface/duplex/set`
-- `POST /vyos/{device}/interface/speed/set`
-- `POST /vyos/{device}/interface/delete`
-- `POST /vyos/{device}/interface/batch`
-
-**Generic Batch:**
-- `POST /vyos/{device}/batch` - Send raw command paths
+**Best Practices:**
+- Always refresh config before reading: `POST /vyos/{device}/config/refresh`
+- Use batch operations for multiple changes
+- Keep interface types in separate self-contained files
+- Don't try to share code between interface types - clarity > DRY
 
 ---
 

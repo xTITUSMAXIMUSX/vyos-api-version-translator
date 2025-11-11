@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Literal
 from vyos_service import VyOSDeviceConfig, VyOSDeviceRegistry
 
 # Import routers
-from routers import interface
+from routers.interfaces import ethernet, dummy
 
 app = FastAPI(
     title="VyOS Management API",
@@ -40,34 +40,6 @@ class DeviceRegistration(BaseModel):
 
 
 # ============================================================================
-# Pydantic Models - Batch Operations
-# ============================================================================
-
-
-class BatchOperation(BaseModel):
-    """Model for a single batch operation."""
-
-    op: Literal["set", "delete"] = Field(..., description="Operation type")
-    path: List[str] = Field(..., description="Command path as list of strings")
-
-
-class BatchRequest(BaseModel):
-    """Model for batch operations request."""
-
-    operations: List[BatchOperation] = Field(
-        ..., description="List of operations to execute"
-    )
-
-
-class VyOSResponse(BaseModel):
-    """Standard response from VyOS operations."""
-
-    success: bool
-    data: Optional[Dict] = None
-    error: Optional[str] = None
-
-
-# ============================================================================
 # Application Setup
 # ============================================================================
 
@@ -75,10 +47,12 @@ class VyOSResponse(BaseModel):
 device_registry = VyOSDeviceRegistry()
 
 # Set device registry for routers
-interface.set_device_registry(device_registry)
+ethernet.set_device_registry(device_registry)
+dummy.set_device_registry(device_registry)
 
 # Include routers
-app.include_router(interface.router)
+app.include_router(ethernet.router)
+app.include_router(dummy.router)
 
 
 # ============================================================================
@@ -93,7 +67,7 @@ async def read_root() -> dict:
         "message": "VyOS Management API",
         "docs": "/docs",
         "supported_versions": ["1.4", "1.5"],
-        "features": ["interface"],
+        "features": ["ethernet-interface", "dummy-interface"],
     }
 
 
@@ -149,65 +123,67 @@ async def unregister_device(device_name: str) -> dict:
 
 
 # ============================================================================
-# Generic Batch Operations
+# Configuration Management Endpoints
 # ============================================================================
-# Note: Feature-specific endpoints (Interface, etc.) are in routers/
-#       This endpoint is for advanced users who want to send raw command paths
 
 
-@app.post("/vyos/{device_name}/batch", tags=["vyos-batch"])
-async def execute_batch_operations(
-    device_name: str, batch_request: BatchRequest
-) -> VyOSResponse:
+@app.post("/vyos/{device_name}/config/refresh", tags=["config-management"])
+async def refresh_device_config(device_name: str) -> dict:
     """
-    Execute multiple VyOS configuration operations in a single batch.
+    Force refresh the full configuration from VyOS device and cache it.
 
-    This endpoint allows you to send multiple set/delete operations that
-    will be executed together using configure_multiple_op for efficiency.
+    This endpoint will:
+    1. Make an API call to VyOS to retrieve the full configuration
+    2. Store it in the cache for faster subsequent reads
+    3. Return summary information about the config
 
-    Note: You must provide the correct command paths for the device's VyOS version.
-    For version-aware operations, use the specific endpoints like /interface/batch.
-
-    Example request body:
-    ```json
-    {
-        "operations": [
-            {
-                "op": "set",
-                "path": ["interfaces", "ethernet", "eth0", "address", "10.0.0.1/24"]
-            },
-            {
-                "op": "set",
-                "path": ["interfaces", "ethernet", "eth0", "description", "LAN"]
-            },
-            {
-                "op": "delete",
-                "path": ["interfaces", "ethernet", "eth1"]
-            }
-        ]
-    }
-    ```
+    Use this endpoint when you want to ensure you have the latest configuration.
     """
     try:
         service = device_registry.get(device_name)
-        batch = service.create_version_aware_batch()
+        config = service.refresh_config()
 
-        for operation in batch_request.operations:
-            if operation.op == "set":
-                batch.add_set(operation.path)
-            elif operation.op == "delete":
-                batch.add_delete(operation.path)
-
-        response = service.execute_batch(batch)
-
-        return VyOSResponse(
-            success=response.status == 200,
-            data=response.result,
-            error=response.error if response.error else None
-        )
+        # Return summary info
+        return {
+            "success": True,
+            "message": f"Configuration refreshed for device '{device_name}'",
+            "cached": True,
+            "config_keys": list(config.keys()) if config else [],
+        }
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/vyos/{device_name}/config", tags=["config-management"])
+async def get_device_config(device_name: str, refresh: bool = False) -> dict:
+    """
+    Get the full VyOS configuration (cached or fresh).
+
+    Args:
+        device_name: Name of the registered device
+        refresh: If True, force refresh from VyOS. If False, use cache if available.
+
+    Returns:
+        Full VyOS configuration as JSON
+    """
+    try:
+        service = device_registry.get(device_name)
+        config = service.get_full_config(refresh=refresh)
+
+        return {
+            "success": True,
+            "device": device_name,
+            "cached": not refresh,
+            "config": config,
+        }
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Note: Feature-specific endpoints (Ethernet, Dummy, etc.) are in routers/
+# ============================================================================

@@ -1,10 +1,10 @@
 """
 FastAPI Routers
 
-Each router handles a specific VyOS feature:
-- interface: Interface configuration endpoints
+Each feature category (interfaces, firewall, nat, etc.) has its own subdirectory.
+Import routers from their respective feature modules.
 """
 
-from .interface import router as interface_router
+from .interfaces import ethernet, dummy
 
-__all__ = ["interface_router"]
+__all__ = ["ethernet", "dummy"]

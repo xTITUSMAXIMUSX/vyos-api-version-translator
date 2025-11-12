@@ -12,16 +12,25 @@ from typing import Dict, List, Optional
 from vyos_service import VyOSDeviceRegistry
 
 # Router for dummy interface endpoints
-router = APIRouter(prefix="/vyos/{device_name}/dummy", tags=["dummy-interface"])
+router = APIRouter(prefix="/vyos/dummy", tags=["dummy-interface"])
 
 # Shared device registry (will be set from app.py)
 device_registry: VyOSDeviceRegistry = None
+
+# Configured device name (will be imported from app.py)
+CONFIGURED_DEVICE_NAME: Optional[str] = None
 
 
 def set_device_registry(registry: VyOSDeviceRegistry):
     """Set the device registry for this router."""
     global device_registry
     device_registry = registry
+
+
+def set_configured_device_name(name: str):
+    """Set the configured device name for this router."""
+    global CONFIGURED_DEVICE_NAME
+    CONFIGURED_DEVICE_NAME = name
 
 
 # ============================================================================
@@ -157,7 +166,7 @@ class DummyInterfacesConfigResponse(BaseModel):
 
 
 @router.get("/config", response_model=DummyInterfacesConfigResponse)
-async def get_dummy_config(device_name: str) -> DummyInterfacesConfigResponse:
+async def get_dummy_config() -> DummyInterfacesConfigResponse:
     """
     Get all dummy interface configurations from VyOS.
 
@@ -166,9 +175,14 @@ async def get_dummy_config(device_name: str) -> DummyInterfacesConfigResponse:
     """
     from vyos_mappers.interfaces import DummyInterfaceMapper
 
+    if CONFIGURED_DEVICE_NAME is None:
+        raise HTTPException(
+            status_code=503, detail="No device configured. Check .env file."
+        )
+
     try:
         # Get service and retrieve raw config from cache
-        service = device_registry.get(device_name)
+        service = device_registry.get(CONFIGURED_DEVICE_NAME)
         full_config = service.get_full_config()
         raw_config = full_config.get("interfaces", {}).get("dummy", {})
 
@@ -190,9 +204,7 @@ async def get_dummy_config(device_name: str) -> DummyInterfacesConfigResponse:
 
 
 @router.post("/batch")
-async def configure_interface_batch(
-    device_name: str, request: InterfaceBatchRequest
-) -> VyOSResponse:
+async def configure_interface_batch(request: InterfaceBatchRequest) -> VyOSResponse:
     """
     Configure dummy interface using batch operations.
 
@@ -244,8 +256,13 @@ async def configure_interface_batch(
     }
     ```
     """
+    if CONFIGURED_DEVICE_NAME is None:
+        raise HTTPException(
+            status_code=503, detail="No device configured. Check .env file."
+        )
+
     try:
-        service = device_registry.get(device_name)
+        service = device_registry.get(CONFIGURED_DEVICE_NAME)
         batch = service.create_dummy_batch()
 
         # Process each operation

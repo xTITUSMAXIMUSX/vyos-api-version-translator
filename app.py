@@ -1,19 +1,89 @@
 import urllib3
 urllib3.disable_warnings()
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import Dict, List, Optional, Literal
 
 from vyos_service import VyOSDeviceConfig, VyOSDeviceRegistry
+from config_loader import load_device_from_env
 
 # Import routers
 from routers.interfaces import ethernet, dummy
+
+# Global variable to store the configured device name
+CONFIGURED_DEVICE_NAME: Optional[str] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    FastAPI lifespan event handler.
+    Runs on startup and shutdown to manage device registration and caching.
+    """
+    global CONFIGURED_DEVICE_NAME
+
+    # Startup: Load device from .env and cache its config
+    print("\n" + "=" * 60)
+    print("🚀 Starting VyOS Management API")
+    print("=" * 60)
+
+    # Load device from .env file
+    device_config = load_device_from_env()
+
+    if device_config:
+        print(f"\n📋 Registering device from .env file...")
+
+        try:
+            # Convert to VyOSDeviceConfig and register
+            name, config = device_config.to_vyos_config()
+            device_registry.register(name, config)
+            CONFIGURED_DEVICE_NAME = name
+
+            # Set device name in routers
+            ethernet.set_configured_device_name(name)
+            dummy.set_configured_device_name(name)
+
+            print(f"  ✓ Registered: {name}")
+
+            # Pre-cache the full configuration
+            service = device_registry.get(name)
+            print(f"    └─ Fetching full config...")
+            full_config = service.get_full_config()
+            print(f"    └─ ✓ Cached config ({len(full_config)} top-level keys)")
+
+            print(f"\n✓ Successfully initialized device '{name}'")
+
+        except Exception as e:
+            print(f"  ✗ Failed to register {device_config.name}: {e}")
+            print("  ⚠ API will start but device operations will fail")
+
+    else:
+        print("\n✗ No device configuration found in .env file")
+        print("  Please create a .env file with VYOS_* variables (see .env.example)")
+        print("  ⚠ API will start but device operations will fail")
+
+    print("=" * 60)
+    print("✓ API Ready\n")
+
+    # Yield control to the application
+    yield
+
+    # Shutdown: Cleanup (if needed)
+    print("\n🛑 Shutting down VyOS Management API...")
+    device_registry.clear()
+    CONFIGURED_DEVICE_NAME = None
+    ethernet.set_configured_device_name(None)
+    dummy.set_configured_device_name(None)
+    print("✓ Cleanup complete\n")
+
 
 app = FastAPI(
     title="VyOS Management API",
     version="1.0.0",
     description="FastAPI backend for managing VyOS devices with version-aware commands",
+    lifespan=lifespan,
 )
 
 
@@ -104,22 +174,22 @@ async def register_device(device: DeviceRegistration) -> dict:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/devices", tags=["device-management"])
-async def list_devices() -> dict:
-    """List all registered VyOS devices."""
-    devices = device_registry.list_devices()
-    device_info = []
-    for name in devices:
-        service = device_registry.get(name)
-        device_info.append({"name": name, "version": service.get_version()})
-    return {"devices": device_info}
+@app.get("/device", tags=["device-management"])
+async def get_device_info() -> dict:
+    """Get information about the configured VyOS device."""
+    if CONFIGURED_DEVICE_NAME is None:
+        raise HTTPException(
+            status_code=503, detail="No device configured. Check .env file."
+        )
 
-
-@app.delete("/devices/{device_name}", tags=["device-management"])
-async def unregister_device(device_name: str) -> dict:
-    """Unregister a VyOS device."""
-    device_registry.unregister(device_name)
-    return {"success": True, "message": f"Device '{device_name}' unregistered"}
+    try:
+        service = device_registry.get(CONFIGURED_DEVICE_NAME)
+        return {
+            "name": CONFIGURED_DEVICE_NAME,
+            "version": service.get_version(),
+        }
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Device not found in registry")
 
 
 # ============================================================================
@@ -127,8 +197,8 @@ async def unregister_device(device_name: str) -> dict:
 # ============================================================================
 
 
-@app.post("/vyos/{device_name}/config/refresh", tags=["config-management"])
-async def refresh_device_config(device_name: str) -> dict:
+@app.post("/vyos/config/refresh", tags=["config-management"])
+async def refresh_device_config() -> dict:
     """
     Force refresh the full configuration from VyOS device and cache it.
 
@@ -139,14 +209,19 @@ async def refresh_device_config(device_name: str) -> dict:
 
     Use this endpoint when you want to ensure you have the latest configuration.
     """
+    if CONFIGURED_DEVICE_NAME is None:
+        raise HTTPException(
+            status_code=503, detail="No device configured. Check .env file."
+        )
+
     try:
-        service = device_registry.get(device_name)
+        service = device_registry.get(CONFIGURED_DEVICE_NAME)
         config = service.refresh_config()
 
         # Return summary info
         return {
             "success": True,
-            "message": f"Configuration refreshed for device '{device_name}'",
+            "message": f"Configuration refreshed for device '{CONFIGURED_DEVICE_NAME}'",
             "cached": True,
             "config_keys": list(config.keys()) if config else [],
         }
@@ -156,25 +231,29 @@ async def refresh_device_config(device_name: str) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/vyos/{device_name}/config", tags=["config-management"])
-async def get_device_config(device_name: str, refresh: bool = False) -> dict:
+@app.get("/vyos/config", tags=["config-management"])
+async def get_device_config(refresh: bool = False) -> dict:
     """
     Get the full VyOS configuration (cached or fresh).
 
     Args:
-        device_name: Name of the registered device
         refresh: If True, force refresh from VyOS. If False, use cache if available.
 
     Returns:
         Full VyOS configuration as JSON
     """
+    if CONFIGURED_DEVICE_NAME is None:
+        raise HTTPException(
+            status_code=503, detail="No device configured. Check .env file."
+        )
+
     try:
-        service = device_registry.get(device_name)
+        service = device_registry.get(CONFIGURED_DEVICE_NAME)
         config = service.get_full_config(refresh=refresh)
 
         return {
             "success": True,
-            "device": device_name,
+            "device": CONFIGURED_DEVICE_NAME,
             "cached": not refresh,
             "config": config,
         }

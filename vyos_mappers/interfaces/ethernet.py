@@ -462,162 +462,24 @@ class EthernetInterfaceMapper(BaseFeatureMapper):
         """
         Parse a single ethernet interface configuration from VyOS (version-aware).
 
+        Returns normalized structure - all versions return same fields.
+        Unavailable features are set to None.
+
         Args:
             name: Interface name
             config: Raw interface config dictionary from VyOS
 
         Returns:
-            Parsed interface data as dictionary
-        """
-        # Version-aware parsing
-        if self.version == "1.4":
-            return self._parse_interface_v14(name, config)
-        elif self.version == "1.5":
-            return self._parse_interface_v15(name, config)
-        else:
-            # Default to 1.5 parsing for unknown versions
-            return self._parse_interface_v15(name, config)
-
-    def _parse_interface_v14(self, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Parse ethernet interface configuration for VyOS 1.4.x.
-
-        Args:
-            name: Interface name
-            config: Raw interface config dictionary
-
-        Returns:
-            Parsed interface data
+            Parsed interface data as dictionary (normalized across all versions)
         """
         # Parse addresses (can be string or list)
-        addresses = []
-        if "address" in config:
-            addr = config["address"]
-            if isinstance(addr, list):
-                addresses = addr
-            elif isinstance(addr, str):
-                addresses = [addr]
+        addresses = self._parse_addresses(config)
 
         # Check if interface is disabled
         disabled = "disable" in config
 
-        # Parse offload settings
-        offload = config.get("offload", {})
-
-        # Parse ring buffer settings
-        ring_buffer = config.get("ring-buffer", {})
-
-        # Parse IP settings
-        ip_config = config.get("ip", {})
-
-        # Parse IPv6 settings
-        ipv6_config = config.get("ipv6", {})
-
-        # Parse IPv6 addresses (autoconf, eui64)
-        ipv6_addresses = []
-        if "ipv6" in config and "address" in config["ipv6"]:
-            ipv6_addr = config["ipv6"]["address"]
-            if isinstance(ipv6_addr, dict):
-                if "autoconf" in ipv6_addr:
-                    ipv6_addresses.append("autoconf")
-                if "eui64" in ipv6_addr:
-                    eui64_addrs = ipv6_addr["eui64"]
-                    if isinstance(eui64_addrs, list):
-                        ipv6_addresses.extend([f"eui64:{addr}" for addr in eui64_addrs])
-                    elif isinstance(eui64_addrs, str):
-                        ipv6_addresses.append(f"eui64:{eui64_addrs}")
-
-        # Parse DHCP options
-        dhcp_options = config.get("dhcp-options", {})
-
-        # Parse DHCPv6 options
-        dhcpv6_options = config.get("dhcpv6-options", {})
-
-        # Parse VLANs (VIF - 802.1q)
-        vif_raw = config.get("vif", {})
-        vif_parsed = []
-        if vif_raw:
-            for vif_id, vif_config in vif_raw.items():
-                if isinstance(vif_config, dict):
-                    # Parse VIF addresses
-                    vif_addresses = []
-                    if "address" in vif_config:
-                        addr = vif_config["address"]
-                        if isinstance(addr, list):
-                            vif_addresses = addr
-                        elif isinstance(addr, str):
-                            vif_addresses = [addr]
-
-                    vif_parsed.append({
-                        "vlan_id": vif_id,
-                        "addresses": vif_addresses,
-                        "description": vif_config.get("description"),
-                        "mtu": vif_config.get("mtu"),
-                        "mac": vif_config.get("mac"),
-                        "vrf": vif_config.get("vrf"),
-                        "disable": "disable" in vif_config,
-                    })
-
-        # Parse VLANs (VIF-S - QinQ Service)
-        vif_s_raw = config.get("vif-s", {})
-        vif_s_parsed = []
-        if vif_s_raw:
-            for vif_s_id, vif_s_config in vif_s_raw.items():
-                if isinstance(vif_s_config, dict):
-                    # Parse VIF-S addresses
-                    vif_s_addresses = []
-                    if "address" in vif_s_config:
-                        addr = vif_s_config["address"]
-                        if isinstance(addr, list):
-                            vif_s_addresses = addr
-                        elif isinstance(addr, str):
-                            vif_s_addresses = [addr]
-
-                    # Parse VIF-C (customer VLANs under this service VLAN)
-                    vif_c_raw = vif_s_config.get("vif-c", {})
-                    vif_c_parsed = []
-                    if vif_c_raw:
-                        for vif_c_id, vif_c_config in vif_c_raw.items():
-                            if isinstance(vif_c_config, dict):
-                                # Parse VIF-C addresses
-                                vif_c_addresses = []
-                                if "address" in vif_c_config:
-                                    addr = vif_c_config["address"]
-                                    if isinstance(addr, list):
-                                        vif_c_addresses = addr
-                                    elif isinstance(addr, str):
-                                        vif_c_addresses = [addr]
-
-                                vif_c_parsed.append({
-                                    "vlan_id": vif_c_id,
-                                    "addresses": vif_c_addresses,
-                                    "description": vif_c_config.get("description"),
-                                    "mtu": vif_c_config.get("mtu"),
-                                    "mac": vif_c_config.get("mac"),
-                                    "vrf": vif_c_config.get("vrf"),
-                                    "disable": "disable" in vif_c_config,
-                                })
-
-                    vif_s_parsed.append({
-                        "vlan_id": vif_s_id,
-                        "addresses": vif_s_addresses,
-                        "description": vif_s_config.get("description"),
-                        "mtu": vif_s_config.get("mtu"),
-                        "mac": vif_s_config.get("mac"),
-                        "vrf": vif_s_config.get("vrf"),
-                        "disable": "disable" in vif_s_config,
-                        "vif_c": vif_c_parsed if vif_c_parsed else None,
-                    })
-
-        # Parse mirror settings
-        mirror = config.get("mirror", {})
-
-        # Parse EAPoL settings
-        eapol = config.get("eapol", {})
-
-        # Parse EVPN settings
-        evpn = config.get("evpn", {})
-
+        # Parse all configuration sections using helper methods
+        # These can be overridden in version-specific subclasses
         return {
             "name": name,
             "type": self.interface_type,
@@ -632,85 +494,26 @@ class EthernetInterfaceMapper(BaseFeatureMapper):
             "disable": disabled if disabled else None,
             "disable_flow_control": "disable-flow-control" in config,
             "disable_link_detect": "disable-link-detect" in config,
-            # Offload settings
-            "offload": {
-                "gro": offload.get("gro") if offload else None,
-                "gso": offload.get("gso") if offload else None,
-                "lro": offload.get("lro") if offload else None,
-                "rps": offload.get("rps") if offload else None,
-                "sg": offload.get("sg") if offload else None,
-                "tso": offload.get("tso") if offload else None,
-            } if offload else None,
-            # Ring buffer
-            "ring_buffer": {
-                "rx": ring_buffer.get("rx"),
-                "tx": ring_buffer.get("tx"),
-            } if ring_buffer else None,
-            # IP settings
-            "ip": {
-                "adjust_mss": ip_config.get("adjust-mss"),
-                "arp_cache_timeout": ip_config.get("arp-cache-timeout"),
-                "disable_arp_filter": "disable-arp-filter" in ip_config,
-                "enable_arp_accept": "enable-arp-accept" in ip_config,
-                "enable_arp_announce": "enable-arp-announce" in ip_config,
-                "enable_arp_ignore": "enable-arp-ignore" in ip_config,
-                "enable_proxy_arp": "enable-proxy-arp" in ip_config,
-                "proxy_arp_pvlan": "proxy-arp-pvlan" in ip_config,
-                "source_validation": ip_config.get("source-validation"),
-            } if ip_config else None,
-            # IPv6 settings
-            "ipv6": {
-                "address": ipv6_addresses if ipv6_addresses else None,
-                "adjust_mss": ipv6_config.get("adjust-mss"),
-                "disable_forwarding": "disable-forwarding" in ipv6_config,
-                "dup_addr_detect_transmits": ipv6_config.get("dup-addr-detect-transmits"),
-            } if ipv6_config or ipv6_addresses else None,
-            # DHCP options
-            "dhcp_options": {
-                "client_id": dhcp_options.get("client-id"),
-                "host_name": dhcp_options.get("host-name"),
-                "vendor_class_id": dhcp_options.get("vendor-class-id"),
-                "no_default_route": "no-default-route" in dhcp_options,
-                "default_route_distance": dhcp_options.get("default-route-distance"),
-            } if dhcp_options else None,
-            # DHCPv6 options
-            "dhcpv6_options": {
-                "duid": dhcpv6_options.get("duid"),
-                "rapid_commit": "rapid-commit" in dhcpv6_options,
-                "pd": dhcpv6_options.get("pd"),
-            } if dhcpv6_options else None,
-            # VLANs
-            "vif": vif_parsed if vif_parsed else None,
-            "vif_s": vif_s_parsed if vif_s_parsed else None,
-            # Port mirroring
-            "mirror": {
-                "ingress": mirror.get("ingress"),
-                "egress": mirror.get("egress"),
-            } if mirror else None,
-            # EAPoL
-            "eapol": {
-                "ca_cert_file": eapol.get("ca-cert-file"),
-                "cert_file": eapol.get("cert-file"),
-                "key_file": eapol.get("key-file"),
-            } if eapol else None,
-            # EVPN
-            "evpn": {
-                "uplink": "uplink" in evpn,
-            } if evpn else None,
+            # Parsed subsections
+            "offload": self._parse_offload(config),
+            "ring_buffer": self._parse_ring_buffer(config),
+            "ip": self._parse_ip_config(config),  # Version-aware
+            "ipv6": self._parse_ipv6_config(config),
+            "dhcp_options": self._parse_dhcp_options(config),
+            "dhcpv6_options": self._parse_dhcpv6_options(config),
+            "vif": self._parse_vif(config),
+            "vif_s": self._parse_vif_s(config),
+            "mirror": self._parse_mirror(config),
+            "eapol": self._parse_eapol(config),
+            "evpn": self._parse_evpn(config),
         }
 
-    def _parse_interface_v15(self, name: str, config: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Parse ethernet interface configuration for VyOS 1.5.x.
+    # ========================================================================
+    # Helper Methods - Can be overridden in version-specific subclasses
+    # ========================================================================
 
-        Args:
-            name: Interface name
-            config: Raw interface config dictionary
-
-        Returns:
-            Parsed interface data
-        """
-        # Parse addresses (can be string or list)
+    def _parse_addresses(self, config: Dict[str, Any]) -> List[str]:
+        """Parse addresses (works for all versions)."""
         addresses = []
         if "address" in config:
             addr = config["address"]
@@ -718,20 +521,60 @@ class EthernetInterfaceMapper(BaseFeatureMapper):
                 addresses = addr
             elif isinstance(addr, str):
                 addresses = [addr]
+        return addresses
 
-        # Check if interface is disabled
-        disabled = "disable" in config
-
-        # Parse offload settings
+    def _parse_offload(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse hardware offload settings."""
         offload = config.get("offload", {})
+        if not offload:
+            return None
+        return {
+            "gro": offload.get("gro"),
+            "gso": offload.get("gso"),
+            "lro": offload.get("lro"),
+            "rps": offload.get("rps"),
+            "sg": offload.get("sg"),
+            "tso": offload.get("tso"),
+        }
 
-        # Parse ring buffer settings
+    def _parse_ring_buffer(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse ring buffer settings."""
         ring_buffer = config.get("ring-buffer", {})
+        if not ring_buffer:
+            return None
+        return {
+            "rx": ring_buffer.get("rx"),
+            "tx": ring_buffer.get("tx"),
+        }
 
-        # Parse IP settings
+    def _parse_ip_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Parse IP configuration.
+
+        Base implementation includes ALL fields (v1.5+ superset).
+        Version-specific subclasses should override to exclude unavailable features.
+        """
         ip_config = config.get("ip", {})
+        if not ip_config:
+            return None
 
-        # Parse IPv6 settings
+        return {
+            "adjust_mss": ip_config.get("adjust-mss"),
+            "arp_cache_timeout": ip_config.get("arp-cache-timeout"),
+            "disable_arp_filter": "disable-arp-filter" in ip_config,
+            "enable_arp_accept": "enable-arp-accept" in ip_config,
+            "enable_arp_announce": "enable-arp-announce" in ip_config,
+            "enable_arp_ignore": "enable-arp-ignore" in ip_config,
+            "enable_proxy_arp": "enable-proxy-arp" in ip_config,
+            "proxy_arp_pvlan": "proxy-arp-pvlan" in ip_config,
+            "source_validation": ip_config.get("source-validation"),
+            # v1.5+ features - included in base for normalization
+            # Override in v1.4 to exclude or set to None
+            "enable_directed_broadcast": "enable-directed-broadcast" in ip_config,
+        }
+
+    def _parse_ipv6_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse IPv6 configuration."""
         ipv6_config = config.get("ipv6", {})
 
         # Parse IPv6 addresses (autoconf, eui64)
@@ -748,13 +591,42 @@ class EthernetInterfaceMapper(BaseFeatureMapper):
                     elif isinstance(eui64_addrs, str):
                         ipv6_addresses.append(f"eui64:{eui64_addrs}")
 
-        # Parse DHCP options
+        if not ipv6_config and not ipv6_addresses:
+            return None
+
+        return {
+            "address": ipv6_addresses if ipv6_addresses else None,
+            "adjust_mss": ipv6_config.get("adjust-mss"),
+            "disable_forwarding": "disable-forwarding" in ipv6_config,
+            "dup_addr_detect_transmits": ipv6_config.get("dup-addr-detect-transmits"),
+        }
+
+    def _parse_dhcp_options(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse DHCP options."""
         dhcp_options = config.get("dhcp-options", {})
+        if not dhcp_options:
+            return None
+        return {
+            "client_id": dhcp_options.get("client-id"),
+            "host_name": dhcp_options.get("host-name"),
+            "vendor_class_id": dhcp_options.get("vendor-class-id"),
+            "no_default_route": "no-default-route" in dhcp_options,
+            "default_route_distance": dhcp_options.get("default-route-distance"),
+        }
 
-        # Parse DHCPv6 options
+    def _parse_dhcpv6_options(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse DHCPv6 options."""
         dhcpv6_options = config.get("dhcpv6-options", {})
+        if not dhcpv6_options:
+            return None
+        return {
+            "duid": dhcpv6_options.get("duid"),
+            "rapid_commit": "rapid-commit" in dhcpv6_options,
+            "pd": dhcpv6_options.get("pd"),
+        }
 
-        # Parse VLANs (VIF - 802.1q)
+    def _parse_vif(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Parse VIF (802.1q VLAN) configurations."""
         vif_raw = config.get("vif", {})
         vif_parsed = []
         if vif_raw:
@@ -778,8 +650,10 @@ class EthernetInterfaceMapper(BaseFeatureMapper):
                         "vrf": vif_config.get("vrf"),
                         "disable": "disable" in vif_config,
                     })
+        return vif_parsed if vif_parsed else None
 
-        # Parse VLANs (VIF-S - QinQ Service)
+    def _parse_vif_s(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Parse VIF-S (QinQ Service VLAN) configurations."""
         vif_s_raw = config.get("vif-s", {})
         vif_s_parsed = []
         if vif_s_raw:
@@ -829,97 +703,36 @@ class EthernetInterfaceMapper(BaseFeatureMapper):
                         "disable": "disable" in vif_s_config,
                         "vif_c": vif_c_parsed if vif_c_parsed else None,
                     })
+        return vif_s_parsed if vif_s_parsed else None
 
-        # Parse mirror settings
+    def _parse_mirror(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse port mirroring settings."""
         mirror = config.get("mirror", {})
-
-        # Parse EAPoL settings
-        eapol = config.get("eapol", {})
-
-        # Parse EVPN settings
-        evpn = config.get("evpn", {})
-
-        # VyOS 1.5 structure (includes directed broadcast support)
+        if not mirror:
+            return None
         return {
-            "name": name,
-            "type": self.interface_type,
-            "addresses": addresses,
-            "description": config.get("description"),
-            "vrf": config.get("vrf"),
-            "mtu": config.get("mtu"),
-            "hw_id": config.get("hw-id"),
-            "mac": config.get("mac"),
-            "duplex": config.get("duplex"),
-            "speed": config.get("speed"),
-            "disable": disabled if disabled else None,
-            "disable_flow_control": "disable-flow-control" in config,
-            "disable_link_detect": "disable-link-detect" in config,
-            # Offload settings
-            "offload": {
-                "gro": offload.get("gro") if offload else None,
-                "gso": offload.get("gso") if offload else None,
-                "lro": offload.get("lro") if offload else None,
-                "rps": offload.get("rps") if offload else None,
-                "sg": offload.get("sg") if offload else None,
-                "tso": offload.get("tso") if offload else None,
-            } if offload else None,
-            # Ring buffer
-            "ring_buffer": {
-                "rx": ring_buffer.get("rx"),
-                "tx": ring_buffer.get("tx"),
-            } if ring_buffer else None,
-            # IP settings (1.5 adds directed broadcast support)
-            "ip": {
-                "adjust_mss": ip_config.get("adjust-mss"),
-                "arp_cache_timeout": ip_config.get("arp-cache-timeout"),
-                "disable_arp_filter": "disable-arp-filter" in ip_config,
-                "enable_arp_accept": "enable-arp-accept" in ip_config,
-                "enable_arp_announce": "enable-arp-announce" in ip_config,
-                "enable_arp_ignore": "enable-arp-ignore" in ip_config,
-                "enable_proxy_arp": "enable-proxy-arp" in ip_config,
-                "proxy_arp_pvlan": "proxy-arp-pvlan" in ip_config,
-                "source_validation": ip_config.get("source-validation"),
-                "enable_directed_broadcast": "enable-directed-broadcast" in ip_config,  # 1.5+ only
-            } if ip_config else None,
-            # IPv6 settings
-            "ipv6": {
-                "address": ipv6_addresses if ipv6_addresses else None,
-                "adjust_mss": ipv6_config.get("adjust-mss"),
-                "disable_forwarding": "disable-forwarding" in ipv6_config,
-                "dup_addr_detect_transmits": ipv6_config.get("dup-addr-detect-transmits"),
-            } if ipv6_config or ipv6_addresses else None,
-            # DHCP options
-            "dhcp_options": {
-                "client_id": dhcp_options.get("client-id"),
-                "host_name": dhcp_options.get("host-name"),
-                "vendor_class_id": dhcp_options.get("vendor-class-id"),
-                "no_default_route": "no-default-route" in dhcp_options,
-                "default_route_distance": dhcp_options.get("default-route-distance"),
-            } if dhcp_options else None,
-            # DHCPv6 options
-            "dhcpv6_options": {
-                "duid": dhcpv6_options.get("duid"),
-                "rapid_commit": "rapid-commit" in dhcpv6_options,
-                "pd": dhcpv6_options.get("pd"),
-            } if dhcpv6_options else None,
-            # VLANs
-            "vif": vif_parsed if vif_parsed else None,
-            "vif_s": vif_s_parsed if vif_s_parsed else None,
-            # Port mirroring
-            "mirror": {
-                "ingress": mirror.get("ingress"),
-                "egress": mirror.get("egress"),
-            } if mirror else None,
-            # EAPoL
-            "eapol": {
-                "ca_cert_file": eapol.get("ca-cert-file"),
-                "cert_file": eapol.get("cert-file"),
-                "key_file": eapol.get("key-file"),
-            } if eapol else None,
-            # EVPN
-            "evpn": {
-                "uplink": "uplink" in evpn,
-            } if evpn else None,
+            "ingress": mirror.get("ingress"),
+            "egress": mirror.get("egress"),
+        }
+
+    def _parse_eapol(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse EAPoL (802.1X) settings."""
+        eapol = config.get("eapol", {})
+        if not eapol:
+            return None
+        return {
+            "ca_cert_file": eapol.get("ca-cert-file"),
+            "cert_file": eapol.get("cert-file"),
+            "key_file": eapol.get("key-file"),
+        }
+
+    def _parse_evpn(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Parse EVPN settings."""
+        evpn = config.get("evpn", {})
+        if not evpn:
+            return None
+        return {
+            "uplink": "uplink" in evpn,
         }
 
     def parse_interfaces_of_type(self, config: Dict[str, Any]) -> Dict[str, Any]:
